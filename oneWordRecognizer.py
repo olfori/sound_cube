@@ -28,7 +28,7 @@ config.set_string('-lm', os.path.join(md, '8070.lm'))
 
 THRESHOLD = 15  # Порог громкости, если звук выше - сработает распознавание
 PRE_REC_LEN = 3 # длина предзаписи(чтоб ловить начало слова)
-REC_LEN = 10    # длина записи самого слова
+REC_LEN = 8    # длина записи самого слова
 
 SHORT_NORMALIZE = (1.0/32768.0)
 CHUNK = 6144    # длина массива для записи 1 кванта звука для 48КГц
@@ -66,6 +66,10 @@ class Recognizer:
 
         self.correct_wrd = 0
         self.was_recognition = 0
+        self.start_recognition = 0
+
+        self.threshold = THRESHOLD
+        self.rec_len = REC_LEN
 
         # инициализация pyaudio
         self.p = pyaudio.PyAudio()
@@ -85,17 +89,15 @@ class Recognizer:
         self.decoder = Decoder(config)
         self.decoder.start_utt()
 
-        thread = threading.Thread(target=self.listen)
-        thread.start()
+        #thread = threading.Thread(target=self.listen)
+        #thread.start()
 
     def rms(self):
         '''Вычисляю RMS входного сигнала, типа амплитуда'''
-        count = len(self.st) / 2
-        fmt = "%dh" % (count)
-        li_ = struct.unpack(fmt, self.st)
+        li_ = struct.unpack("h"*512, self.st[:1024])
         arr = np.array(li_, np.int) / 32768
         sum_sq = np.sum(arr*arr)
-        rms_ = math.pow(sum_sq / count, 0.5)
+        rms_ = math.pow(sum_sq / 512, 0.5)
         return int(rms_ * 1000)
 
     def read_correct_words_from_file(self, how_many_wrds):
@@ -104,16 +106,17 @@ class Recognizer:
             for i, wrd in enumerate(f):
                 if i < how_many_wrds:
                     wrd = ''.join(e for e in wrd if e.isalnum())
-                    print(wrd)
+                    #print(wrd)
                     self.li_correct_words.append(wrd)
             f.close()
 
     def stream_listen(self):
         '''поток управляет предзаписью, записью, распознаванием звука'''
         while self.recognize:
-            if self.cc != 1:        # останавливаю чтение потока, когда счетчик = 1
-                try:
-                    self.st = self.stream.read(CHUNK) # достаю глыбу байтов из микрофона
+            # если счетчик != 1, читаю в self.st глыбу звука
+            if self.cc != 1:
+                try:    # попытка достать глыбу байтов с микрофона
+                    self.st = self.stream.read(CHUNK)
                 except IOError as ex:
                     #print(ex)
                     self.st = (b'\x00\x00' * CHUNK * CHANNELS)
@@ -125,18 +128,22 @@ class Recognizer:
                 self.buf.append(self.st)    # добавляю глыбы(кванты) звука в общ запись
 
             if self.cc == 1:        # когда счетчик записи == 1
-                if self.stream.is_active():
+                try:
                     self.stream.stop_stream()   # остановить запись
+                except IOError as ex:
+                    print('problem 1')
+                    print(ex)
                 self.recognize_word()    # распознаю слово в записи
+                print('self.correct_wrd in recognizer', self.correct_wrd)
                 #self.write()
                 self.buf = []       # обнулить буфер
                 self.was_recognition = 1
                 if self.recognize:  # если разрешен поток прослушивания
-                    if not self.stream.is_active():
-                        self.stream.start_stream()  # запустить прослушивание
+                    self.stream.start_stream()  # запустить прослушивание
 
             if self.cc:             # если счетчик больше нуля
                 self.cc -= 1        # уменьшить счетчик на 1
+                print(self.cc)
 
     def pre_rec(self):
         ''' пред запись - сохраняю в массив куски звука и сдвигаю на 1 влево'''
@@ -182,8 +189,12 @@ class Recognizer:
     def stop_all(self):
         '''останавливаю все потоки, запрещаю циклы - полный стоп'''
         self.recognize = False
-        if self.stream.is_active():
+        try:
             self.stream.close()
+        except IOError as ex:
+            print('problem 3')
+            print(ex)
+        self.p.terminate()
 
     def check_word(self, word):
         '''сравниваю каждое слово со словами из тхт файла правильных слов'''
@@ -207,21 +218,22 @@ class Recognizer:
         print('Returning to listening')
         time.sleep(1)
 
-    def allow_r(self):
+    def check_allow_recognition(self):
         '''разрешить распознавание'''
-        self.cc = REC_LEN   # разрешаю распознанвание
+        if self.rms() > THRESHOLD: # Если RMS больше порогового значения
+            if self.start_recognition:
+                self.start_recognition = 0
+                self.cc = REC_LEN   # разрешаю распознанвание
 
     def listen(self):
         '''Процесс прослушивания микрофона и старта записи, если RMS > порога'''
         print('Listening beginning')
         while self.recognize:   # Пока разрешено распознавание
             if not self.cc:     # Если счетчик циклов записи = 0
-                rms_val = self.rms()    # Вычислил RMS
-                if rms_val > THRESHOLD: # Если RMS больше порогового значения
-                        self.allow_r()
+                self.check_allow_recognition()
 
 
 if __name__ == '__main__':
     #test()
     A = Recognizer()
-    A.listen()
+    #A.listen()

@@ -30,11 +30,12 @@
 
 '''
 import time
+import os
+from os import path
 import pygame
 #import RPi.GPIO as GPIO # для Raspberry(без эмулятора)
 import GPIOEmu as GPIO   # для проверки в Убунту
-import threading
-from oneWordRecognizer import *
+from oneWordRecognizer import Recognizer as Rec
 
 FIRST_DELAY = 5  # 15 пауза после того, как убрали sig1 (перед голос_1)
 # Если REPLAY_TIME = 0 - повтор отключен
@@ -115,6 +116,8 @@ class Sound:
         self.mus1 = pygame.mixer.music
         self.mus1.set_volume(1.0)
 
+        self.main_cycle()
+
     def check_lang(self):
         '''Установка выбранного языка, в соответствии с нажатыми кнопками выбора языка'''
         if GPIO.input(LANG_BTN_EN):
@@ -129,9 +132,8 @@ class Sound:
             print('Lang was changed, now it\'s', self.lang[0])
 
     def pass_recognition(self):
-        bps8 = self.sig == 8 and GPIO.input(SIG_8_IN)
-        if bps8:
-            return 1
+        if self.sig == 8 and GPIO.input(SIG_8_IN):
+            return True
 
     def before_recognize(self):
         '''вкл подсветку, жду сработку геркона, вкл звук "произнесите заклинание"'''
@@ -145,23 +147,47 @@ class Sound:
                 if self.pass_recognition():
                     return
 
-            self.play_sound(self.voice_path(9), no_sig=1)
+            self.only_play(self.voice_path(9))
+            time.sleep(0.4)
             print('Listening begin')
 
-    def correct_vr(self):
+    def vr_execute(self):
         led(1) # вкл зеленую подсветку
         GPIO.output(SIG_OUT_1, GPIO.HIGH)   # отправил сигнал
+        time.sleep(0.4)
 
     def voice_recognition(self):
         '''Распознавание произнесенного слова'''
-        r = Recognizer()
+        r = Rec()
         self.before_recognize()
         print('this cod be only one time')
 
         while r.recognize:
+            if not r.cc:     # Если счетчик циклов записи = 0
+                if r.correct_wrd != 1:
+                    if r.correct_wrd == -1:
+                        print('r.correct_wrd', r.correct_wrd)
+                        led(0) # вкл красную подсветку
+                        time.sleep(2)
+                        self.before_recognize()
+                        r.correct_wrd = 0
+                    if r.correct_wrd == 0:
+                        if r.rms() > r.threshold:
+                            r.cc = r.rec_len
+                        elif self.pass_recognition():
+                            r.stop_all()        # закончить распознавание, загадка решена
+                            self.vr_execute()
+                            break
+                else:
+                    print('r.correct_wrd', r.correct_wrd)
+                    r.stop_all()        # закончить распознавание, загадка решена
+                    self.vr_execute()
+                    break
+
+            '''
             if self.pass_recognition():
                 r.stop_all()        # закончить распознавание, загадка решена
-                self.correct_vr()
+                self.vr_execute()
 
             if r.was_recognition:
                 r.was_recognition = 0
@@ -169,7 +195,7 @@ class Sound:
                 if r.correct_wrd == 1:
                     print('r.correct_wrd', r.correct_wrd)
                     r.stop_all()        # закончить распознавание, загадка решена
-                    self.correct_vr()
+                    self.vr_execute()
                     break
 
                 # Если произнесено неверное заклинание
@@ -178,18 +204,8 @@ class Sound:
                     print('r.correct_wrd', r.correct_wrd)
                     led(0) # вкл красную подсветку
                     self.before_recognize()
-
-            '''
-            # Здесь разрешаю распознавание
-            if not r.cc:
-                if r.rms() > THRESHOLD: # если громк звука больше порог знач
-                        r.allow_r()
-
-            # if r.try_counter == 6: # Если было ... неправильн попытки
-            #   r.stopAll()        # закончить распознавание - решить загадку
-            #if time.time() - r.start_time > 60:  # Если загадка не решается > ... сек
-            #    r.stopAll()        # закончить распознавание - решить загадку
-            '''
+                    r.start_recognition = 1
+                '''
 
     def GPIOsetup(self):
         '''Настраиваю GPIO'''
@@ -249,7 +265,16 @@ class Sound:
         time.sleep(snd_len)
         self.mus.unpause()
 
-    def play_sound(self, f_name, loop=0, no_sig=0):
+    def only_play(self, f_name):
+        f_name = path.join(DIR_MP3, f_name)
+        print(f_name)
+        self.mus.stop()
+        self.mus.load(f_name)
+        self.mus.play()
+        while self.mus.get_busy():
+            continue
+
+    def play_sound(self, f_name, loop=0):
         '''Проигрываю звуковой файл (имя, зацикливание = -1, без проверки сиг)'''
         print("SIG_IN", self.sig)
 
@@ -259,10 +284,7 @@ class Sound:
         self.mus.load(f_name)
         self.mus.play(loop)
         while self.mus.get_busy():
-            if no_sig:
-                continue
-            else:
-                self.check_new_sig()
+            self.check_new_sig()
 
         time.sleep(0.2)
 
@@ -367,7 +389,7 @@ class Sound:
         self.wait_for_activation()
 
         # Произношу, выбранный язык
-        self.play_sound(self.voice_path(8), no_sig=1)
+        self.only_play(self.voice_path(8))
 
         # пауза с выводом обратного отсчета + выбор языка
         for i in range(FIRST_DELAY):
@@ -401,4 +423,3 @@ if __name__ == '__main__':
     # для воспроизв Pyaudio на аудио вых
     os.system('amixer -c 0 cset numid=3 1')
     S = Sound()
-    S.main_cycle()
